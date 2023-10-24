@@ -209,6 +209,8 @@ def run_lowdown(input_string):
     lowdown_output, _ = process.communicate(input_string.encode())
     
     # Use python regex to extract between \begin{document} and \end{document}
+    # match across lines
+    #match = re.search(r'\\begin\{document\}(.*)\\end\{document\}', lowdown_output.decode(), re.DOTALL)
     match = re.search(r'\\begin{document}(.*)\\end{document}', lowdown_output.decode(), re.DOTALL)
 
     #extract the group from the match object
@@ -379,7 +381,7 @@ def process_chunks(chunks, data_toml):
 
 
 if __name__ == '__main__':
-
+    
     load_dotenv()
     reproduce_dir = os.getenv("REPROWORKDIR")
 
@@ -388,39 +390,25 @@ if __name__ == '__main__':
             data = toml.load(f)
         return data
     base_config = read_base_config()
-
-    document_dir = base_config['repro']['document_dir']
     output_linefile = base_config['repro']['files']['output_linefile']
     
-    # ensure tmp dir exists
-    os.makedirs(f'./{reproduce_dir}/tmp', exist_ok=True)
-    os.makedirs(f'./{reproduce_dir}/tmp/{document_dir}', exist_ok=True)
 
-    # copy contents from document_dir except report.pdf to reproduce_dir/tmp/document_dir
-    #os.system(f'find ./{document_dir}/ -type f ! -name "report.pdf" -exec cp {{}} ./{reproduce_dir}/tmp/{document_dir}/ \;')
+    # raise error if f'./{reproduce_dir}/tmp/latex' doesn't exist
+    if not os.path.exists(f'./{reproduce_dir}/tmp/latex'):
+        raise Exception(f'./{reproduce_dir}/tmp/latex does not exist')
 
-    # Delete contents of target directory
-    # List of files to copy
-    files_to_copy = [
-        "main.md",
-        "latex/apa.bst",
-        "latex/bibliography.bib",
-        "latex/template.tex"
-    ]
 
-    # Loop over each file and copy it to the target directory
-    for file in files_to_copy:
-        os.system(f'cp ./{document_dir}/{file} ./{reproduce_dir}/tmp/{document_dir}/{file}')
+
 
     print('Replacing \INSERTs with TOML data in latex_template file')
-    with open(Path( base_config['repro']['files']['latex_template']), 'r') as f:
+    with open(Path( base_config['repro']['files']['template']), 'r') as f:
         latex_template_content = f.read()
 
     latex_template_content = replace_config_inserts(latex_template_content)
     
     # make interfim file
     # enusre latex dir exists
-    interim_filepath = f'./{reproduce_dir}/tmp/{document_dir}/latex/latex_template_interim.tex'
+    interim_filepath = f'./{reproduce_dir}/tmp/latex/latex_template_interim.tex'
     os.makedirs(os.path.dirname(Path(interim_filepath)), exist_ok=True)
     with open(interim_filepath, 'w+') as f:
         f.write(latex_template_content)
@@ -438,7 +426,7 @@ if __name__ == '__main__':
     chunks = extract_chunks(content)
     content = process_chunks(chunks, data_toml)
 
-    with open(f'./{reproduce_dir}/tmp/{document_dir}/latex/latex_template_interim.tex', 'r') as f:
+    with open(f'./{reproduce_dir}/tmp/latex/latex_template_interim.tex', 'r') as f:
         template = f.read()
 
     compiled = template.replace('%%@@LOWDOWN_CONTENT@@%%', content)
