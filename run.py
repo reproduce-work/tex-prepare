@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import re
 import subprocess
 import hashlib
+import datetime
 
 
 def generate_filepath_key(path):
@@ -28,29 +29,46 @@ def generate_filepath_key(path):
     
     return key
 
-def get_toml_key(data, key):
+def get_toml_value(data, key_str):
+    
+    # Ensure data is a dictionary
+    if not isinstance(data, dict):
+        raise ValueError("Provided data is not a dictionary.")
+    
+    keys = key_str.split('.')
+    curr_data = data
 
-    if 'img/scatter' in key:
-        print(data,key)
+    for key in keys:
+        # Check for list notation
+        if '[' in key and ']' in key:
+            # Extract list index and key name
+            list_key = key.split('[')[0]
+            index = int(key.split('[')[1].split(']')[0])
+            
+            if list_key not in curr_data:
+                return f"Key {list_key} does not exist.", None
 
-    # Check if the key exists
-    if key in data:
-        # Extract the value
-        if 'type' in data[key] and data[key]['type']=='file':
-            # file types, return filepath (should we return the contents of the file instead?)
-            value = key
-        elif 'value' in data[key]:
-            value = data[key]['value']
-        
+            curr_data = curr_data[list_key][index]
         else:
-            raise Exception(f"Key {key} does not have a value field in TOML data:\n\n{data.keys()}")
-        
-        # Extract metadata
-        metadata = data[key].copy()
-
-        return value, metadata
+            if key in curr_data:
+                curr_data = curr_data[key]
+            else:
+                return f"Key {key} does not exist.", None
+    
+    # At this point, curr_data is the final value we want to extract
+    if isinstance(curr_data, dict) and 'type' in curr_data and curr_data['type'] == 'file':
+        value = key_str
+    elif isinstance(curr_data, dict) and 'value' in curr_data:
+        value = curr_data['value']
+    elif isinstance(curr_data, (str, int, float, bool, list, datetime.datetime)):
+        value = curr_data
     else:
-        return None, None
+        raise Exception(f"Key {key_str} does not have a valid structure in TOML data.")
+    
+    # Extract metadata
+    metadata = curr_data.copy() if isinstance(curr_data, dict) else {}
+
+    return value, metadata
 
 def fix_lowdown_var_quotes(text):
     pattern = r'\\INSERT\{\\"([^"]*)\'\'\}'
@@ -78,18 +96,18 @@ def replace_inserts_in_content(content, data):
         if (var_name.startswith('"') and var_name.endswith('"')) or (var_name.startswith("'") and var_name.endswith("'")):
             var_name = var_name[1:-1]
 
-        if var_name in data:
-            replacement_value, metadata = get_toml_key(data, var_name)
+        replacement_value, metadata = get_toml_value(data, var_name)
+        exists = replacement_value is not None
+
+        '''
+        # Will need to deal with filepath type values
         elif generate_filepath_key(var_name) in data:
             print('^^^: filepath var found')
             var_name = generate_filepath_key(var_name)
             print(var_name, data[var_name].keys())
             replacement_value, metadata = data[var_name]['filepath'], data[var_name].copy()
             print(f"^^^: {var_name}, {replacement_value}, {metadata}")
-        else:
-            print(f"^^^ WARNING: {var_name} not found in TOML data")
-
-        exists = replacement_value is not None
+        '''
 
         if exists:
             # get published_url
@@ -149,23 +167,10 @@ def replace_inserts_in_content(content, data):
             start_pos = start_idx + len(replacement_value)
 
         else:
+            print(f"^^^ WARNING: {var_name} not found in TOML data")
             start_pos = end_idx + 1
 
     return content
-
-
-def get_toml_val(data, key):
-    keys = key.split(".")
-    current_data = data
-    for k in keys:
-        if k in current_data:
-            current_data = current_data[k]
-        else:
-            return False
-    if type(current_data) != str:
-        current_data = str(current_data)
-    return current_data
-
 
 def replace_inserts_in_content_plain(content, data):
     start_pos = 0
@@ -179,10 +184,10 @@ def replace_inserts_in_content_plain(content, data):
             break
 
         var_name = content[start_idx + 8:end_idx]        
-        replacement_value = get_toml_val(data, var_name)  # Use a default value if var_name is not in TOML data
+        replacement_value, metadata = get_toml_value(data, var_name)  # Use a default value if var_name is not in TOML data
         if not replacement_value:
             print( f"^^^ WARNING: {var_name} not found in TOML data")
-            return content 
+            #return content 
         
         print(var_name, replacement_value)
 
@@ -385,9 +390,6 @@ if __name__ == '__main__':
     load_dotenv()
     reproduce_dir = os.getenv("REPROWORKDIR")
 
-    print(f'TEX-PREPARE WORKINGDIR: {os.getcwd()}')
-    print(f'{os.listdir()}')
-
     def read_base_config():
         with open(Path(reproduce_dir, 'config.toml'), 'r') as f:
             data = toml.load(f)
@@ -396,20 +398,24 @@ if __name__ == '__main__':
 
     output_linefile = base_config['repro']['files']['output_linefile']
     
-    # raise error if f'./{reproduce_dir}/tmp/latex' doesn't exist
-    if not os.path.exists(f'./{reproduce_dir}/tmp/latex'):
-        raise Exception(f'./{reproduce_dir}/tmp/latex does not exist')
+    # raise error if f'./{reproduce_dir}/tmp/' doesn't exist
+    if not os.path.exists(f'./{reproduce_dir}/tmp/'):
+        raise Exception(f'./{reproduce_dir}/tmp/ does not exist')
 
     print('Replacing \INSERTs with TOML data in latex_template file')
-    with open(Path( base_config['repro']['files']['template']), 'r') as f:
+    template_filepath = base_config['repro']['files']['template']
+    with open(Path(template_filepath), 'r') as f:
         latex_template_content = f.read()
 
     latex_template_content = replace_config_inserts(latex_template_content)
     
     # make interfim file
     # enusre latex dir exists
-    interim_filepath = f'./{reproduce_dir}/tmp/latex/latex_template_interim.tex'
-    os.makedirs(os.path.dirname(Path(interim_filepath)), exist_ok=True)
+    interim_filename = 'latex_template_interim.tex'
+    tmp_latex_dir = os.path.join(reproduce_dir, 'tmp', os.path.dirname(template_filepath))
+    os.makedirs(tmp_latex_dir, exist_ok=True)
+
+    interim_filepath = os.path.join(tmp_latex_dir, interim_filename)
     with open(interim_filepath, 'w+') as f:
         f.write(latex_template_content)
 
@@ -426,19 +432,15 @@ if __name__ == '__main__':
     chunks = extract_chunks(content)
     content = process_chunks(chunks, data_toml)
 
-    with open(f'./{reproduce_dir}/tmp/latex/latex_template_interim.tex', 'r') as f:
+    with open(interim_filepath, 'r') as f:
         template = f.read()
 
     compiled = template.replace('%%@@LOWDOWN_CONTENT@@%%', content)
 
-    # ensure output_file dir exists
-    linefile_fullpath = Path(reproduce_dir, 'tmp', output_linefile)
-    os.makedirs(os.path.dirname(linefile_fullpath), exist_ok=True)
-
+    linefile_fullpath = os.path.join(reproduce_dir, 'tmp', output_linefile)
     print('Replacing \INSERTs with TOML data in main input file')
-
     print(f'Writing compiled output {linefile_fullpath}')
-    with open(linefile_fullpath, 'w') as f:
+    with open(linefile_fullpath, 'w+') as f:
         f.write(compiled)
 
     print('Done')
