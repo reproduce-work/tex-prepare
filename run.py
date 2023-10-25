@@ -385,20 +385,20 @@ if __name__ == '__main__':
     load_dotenv()
     reproduce_dir = os.getenv("REPROWORKDIR")
 
+    print(f'TEX-PREPARE WORKINGDIR: {os.getcwd()}')
+    print(f'{os.listdir()}')
+
     def read_base_config():
         with open(Path(reproduce_dir, 'config.toml'), 'r') as f:
             data = toml.load(f)
         return data
     base_config = read_base_config()
+
     output_linefile = base_config['repro']['files']['output_linefile']
     
-
     # raise error if f'./{reproduce_dir}/tmp/latex' doesn't exist
     if not os.path.exists(f'./{reproduce_dir}/tmp/latex'):
         raise Exception(f'./{reproduce_dir}/tmp/latex does not exist')
-
-
-
 
     print('Replacing \INSERTs with TOML data in latex_template file')
     with open(Path( base_config['repro']['files']['template']), 'r') as f:
