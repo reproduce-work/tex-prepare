@@ -6,6 +6,7 @@ import re
 import subprocess
 import hashlib
 import datetime
+import shutil
 
 
 def generate_filepath_key(path):
@@ -35,36 +36,40 @@ def get_toml_value(data, key_str):
     if not isinstance(data, dict):
         raise ValueError("Provided data is not a dictionary.")
     
-    keys = key_str.split('.')
-    curr_data = data
+    # if embedded object is a file, return filepath
+    if generate_filepath_key(key_str) in data:
+        curr_data = data[generate_filepath_key(key_str)]
+        value = curr_data['filepath']
 
-    for key in keys:
-        # Check for list notation
-        if '[' in key and ']' in key:
-            # Extract list index and key name
-            list_key = key.split('[')[0]
-            index = int(key.split('[')[1].split(']')[0])
-            
-            if list_key not in curr_data:
-                return f"Key {list_key} does not exist.", None
-
-            curr_data = curr_data[list_key][index]
-        else:
-            if key in curr_data:
-                curr_data = curr_data[key]
-            else:
-                return f"Key {key} does not exist.", None
-    
-    # At this point, curr_data is the final value we want to extract
-    if isinstance(curr_data, dict) and 'type' in curr_data and curr_data['type'] == 'file':
-        value = key_str
-    elif isinstance(curr_data, dict) and 'value' in curr_data:
-        value = curr_data['value']
-    elif isinstance(curr_data, (str, int, float, bool, list, datetime.datetime)):
-        value = curr_data
     else:
-        raise Exception(f"Key {key_str} does not have a valid structure in TOML data.")
-    
+        keys = key_str.split('.')
+        curr_data = data
+
+        for key in keys:
+            # Check for list notation
+            if '[' in key and ']' in key:
+                # Extract list index and key name
+                list_key = key.split('[')[0]
+                index = int(key.split('[')[1].split(']')[0])
+                
+                if list_key not in curr_data:
+                    return f"Key {list_key} does not exist.", None
+
+                curr_data = curr_data[list_key][index]
+            else:
+                if key in curr_data:
+                    curr_data = curr_data[key]            
+                else:
+                    return f"Key {key} does not exist.", None
+        
+        # At this point, curr_data is the final value we want to extract
+        if isinstance(curr_data, dict) and 'value' in curr_data:
+            value = curr_data['value']
+        elif isinstance(curr_data, (str, int, float, bool, list, datetime.datetime)):
+            value = curr_data
+        else:
+            raise Exception(f"Key {key_str} does not have a valid structure in TOML data.")
+        
     # Extract metadata
     metadata = curr_data.copy() if isinstance(curr_data, dict) else {}
 
@@ -77,16 +82,29 @@ def fix_lowdown_var_quotes(text):
 def replace_inserts_in_content(content, data):
     start_pos = 0
 
-    while True:
+    # Define the pattern
+    pattern = r'\\(INSERT|LINK|FILE|BADGE|WRAP){'
 
-        start_idx = content.find(r'\INSERT{', start_pos)
-        if start_idx == -1:
+    while True:
+        # Use re.search to find the first occurrence of the pattern
+        match = re.search(pattern, content[start_pos:])
+        if match is None:
             break
+
+        # The start index of the match in the content
+        start_idx = match.start() + start_pos
+        # The end index of the match in the content
         end_idx = content.find('}', start_idx)
         if end_idx == -1:
             break
 
-        var_name = content[start_idx + 8:end_idx]
+        # The matched command
+        command = match.group(1)
+        # The variable name
+        var_name = content[start_idx + len(command) + 2:end_idx]
+
+        # Update start_pos for the next iteration
+        start_pos = end_idx + 1
         
         # fix lowdown quotes
         if var_name.endswith("''"):
@@ -95,73 +113,66 @@ def replace_inserts_in_content(content, data):
         
         if (var_name.startswith('"') and var_name.endswith('"')) or (var_name.startswith("'") and var_name.endswith("'")):
             var_name = var_name[1:-1]
-
+        
         replacement_value, metadata = get_toml_value(data, var_name)
+
+        print(command, var_name, replacement_value, metadata)
+
         exists = replacement_value is not None
 
-        '''
-        # Will need to deal with filepath type values
-        elif generate_filepath_key(var_name) in data:
-            print('^^^: filepath var found')
-            var_name = generate_filepath_key(var_name)
-            print(var_name, data[var_name].keys())
-            replacement_value, metadata = data[var_name]['filepath'], data[var_name].copy()
-            print(f"^^^: {var_name}, {replacement_value}, {metadata}")
-        '''
-
         if exists:
-            # get published_url
-            if 'badge_link' in metadata:
-                badge_link = metadata['badge_link']
-            elif 'published_url' in metadata:
-                badge_link = metadata['published_url']
-            else:
-                raise Exception(f"Key {key} does not have a badge_link or published_url field in TOML data:\n\n{data.keys()}")
+ 
+            if command == 'INSERT':
+                replacement_value = f"{replacement_value}"
 
-            if 'plot' in metadata and metadata['plot'] in [True,'True','true']:
-                
-                if 'badge' in metadata:
-                    badge_str = (
-                        r'\hfill {\footnotesize \href{' + badge_link + r'}'
+            elif command == 'LINK':
+                link_source = metadata['published_url']
+                replacement_value = rf"\href{{{link_source}}}{{{replacement_value}}}"
+
+            elif command == 'FILE':
+                # copy file from location to reproduce/tmp/latex/_static/{file}
+                existing_path = replacement_value
+                new_path = os.path.join(reproduce_dir, 'tmp', 'report', 'latex', '_static', existing_path)
+                os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                print(f"Copying {existing_path} to {new_path}")
+                shutil.copy(existing_path, new_path)
+                replacement_value = f"_static/{existing_path}"
+
+            elif command == 'BADGE':
+                link_source = metadata['published_url']
+                badge_str = (
+                        r'{\footnotesize \href{' + link_source + r'}'
                         r'{\texttt{source} \raisebox{-1mm}'
-                        r'{\includegraphics[width=5mm]{../../../../img/logo.png}} }} \hspace{-1.5mm}$\;$'
+                        r'{\includegraphics[width=5mm]{_static/logo.png}} }} \hspace{-1.5mm}$\;$'
                     )
-                else:
-                    badge_str = ''
-                            
-                replacement_value = (
-                    r'\begin{figure}[h]' '\n'
-                    r'\centering' '\n'
-                    r'\begin{minipage}{0.75\textwidth}' '\n'
-                    r'\centering' '\n'
-                    r'\caption{A scatter plot generated using Python and compiled into this report using \texttt{reproduce.work} software}' '\n'
-                    r'\label{fig:scatter}' '\n'
-                    r'\includegraphics[width=.8\textwidth]{../../../../' + replacement_value + '}' '\n'
-                    + badge_str + '\n'
-                    r'\end{minipage}' '\n'
-                    r'\end{figure}'
-                )
+                replacement_value = badge_str
 
+            elif command == 'WRAP':
+                link_source = metadata['published_url']
+                rv = replacement_value.strip()
 
-            elif 'badge' in metadata:
-                if metadata['badge'] == 'reproduce-work-logo':
-                    # ADDING LOGO BADGE
-                    
+                center_begin = ''
+                center_end = ''
+                if rv.startswith(r'\begin{center}') and rv.endswith(r'\end{center}'):
+
                     replacement_value = (
                         replacement_value
                         .replace(r'\begin{center}', '')
                         .replace(r'\end{center}', '')
                     )
-                    replacement_value = (
-                        r'\begin{center}\begin{tabular}{r}' + 
-                        replacement_value +
-                        r'\\ \hfill {\footnotesize \href{' + badge_link + 
-                        r'}{\texttt{source} \raisebox{-1mm}{\includegraphics[width=5mm]{../../../../img/logo.png}} }} \hspace{-1.5mm}$\;$' +
-                        r'\end{tabular}\end{center}'
-                    )
+                    center_begin = r'\begin{center}'
+                    center_end = r'\end{center}'
 
-            
-            print(f"^ Replacing {var_name} with {replacement_value}")
+                replacement_value = (
+                    center_begin + r'\begin{tabular}{r}' + 
+                    replacement_value +
+                    r'\\ \hfill {\footnotesize \href{' + link_source + 
+                    r'}{\texttt{source} \raisebox{-1mm}{\includegraphics[width=5mm]{_static/logo.png}} }} \hspace{-5mm}$\;$' +
+                    r'\end{tabular}' + center_end
+                )
+
+
+            print(f"^ Replacing '{var_name}' with '{replacement_value}'")
             content = content[:start_idx] + replacement_value + content[end_idx + 1:]
             
             start_pos = start_idx + len(replacement_value)
@@ -197,7 +208,7 @@ def replace_inserts_in_content_plain(content, data):
             replacement_value += 'BADGE2!'
 
 
-        print(f"^^ Replacing {var_name} with {replacement_value}")
+        print(f"^^ Replacing '{var_name}' with '{replacement_value}'")
         content = content[:start_idx] + (replacement_value) + content[end_idx + 1:]
         start_pos = start_idx + len(replacement_value)
 
@@ -372,7 +383,7 @@ def process_chunks(chunks, data_toml):
             rendered_chunk = replace_config_inserts(rendered_chunk)
             processed_chunks.append(rendered_chunk) 
         elif chunk_type == 'latex':
-            chunk_content = replace_inserts_in_content_plain(chunk_content, data_toml)
+            chunk_content = replace_inserts_in_content(chunk_content, data_toml)
             processed_chunks.append(chunk_content)
         elif chunk_type == 'comment':
             pass
@@ -383,19 +394,51 @@ def process_chunks(chunks, data_toml):
     combined_chunks = '\n\n'.join(str(chunk) for chunk in processed_chunks)
     return combined_chunks
 
-
+class ReproduceWorkEncoder(toml.TomlEncoder):
+    def dump_str(self, v):
+        """Encode a string."""
+        if "\n" in v:
+            return '"""\n' + v.strip() + '\n' + '"""'
+        return super().dump_str(v)
+    
+    def dump_value(self, v):
+        """Determine the type of a Python object and serialize it accordingly."""
+        if isinstance(v, str) and "\n" in v:
+            return '"""\n' + v.strip() + '\n' + '"""'
+        return super().dump_value(v)
 
 if __name__ == '__main__':
     
     load_dotenv()
     reproduce_dir = os.getenv("REPROWORKDIR")
-
     def read_base_config():
         with open(Path(reproduce_dir, 'config.toml'), 'r') as f:
             data = toml.load(f)
         return data
     base_config = read_base_config()
 
+    if Path('project.toml').exists():
+        with open('project.toml', 'r') as f:
+            user_project_data = toml.load(f)
+            
+        # Add user project data to base config.toml
+        for k in ['project_name', 'full_title', 'abstract','watch']:
+            if k in user_project_data:
+                base_config['project'][k] = user_project_data[k]
+
+        if 'authors' in user_project_data:
+            base_config['authors'] = user_project_data['authors']
+        
+        if 'environment' in user_project_data:
+            if 'repro' not in base_config:
+                base_config['repro'] = {}
+            
+            base_config['repro']['environment'] = user_project_data['environment']
+    
+        # Write the updated config.toml
+        with open(Path(reproduce_dir, 'config.toml'), 'w') as f:
+            toml.dump(base_config, f, encoder=ReproduceWorkEncoder())
+    
     output_linefile = base_config['repro']['files']['output_linefile']
     
     # raise error if f'./{reproduce_dir}/tmp/' doesn't exist
@@ -429,6 +472,7 @@ if __name__ == '__main__':
     with open(Path( base_config['repro']['files']['dynamic']), 'r') as f:
         data_toml = toml.load(f)
 
+    print('Replacing \INSERTs with TOML data in main input file')
     chunks = extract_chunks(content)
     content = process_chunks(chunks, data_toml)
 
@@ -438,7 +482,7 @@ if __name__ == '__main__':
     compiled = template.replace('%%@@LOWDOWN_CONTENT@@%%', content)
 
     linefile_fullpath = os.path.join(reproduce_dir, 'tmp', output_linefile)
-    print('Replacing \INSERTs with TOML data in main input file')
+    
     print(f'Writing compiled output {linefile_fullpath}')
     with open(linefile_fullpath, 'w+') as f:
         f.write(compiled)

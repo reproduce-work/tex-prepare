@@ -3,16 +3,17 @@ FROM python:3.9-slim-buster
 # Install essential tools and libraries
 RUN apt-get update && apt-get install -y \
     wget \
+    git \
     build-essential \ 
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget https://kristaps.bsd.lv/lowdown/snapshots/lowdown.tar.gz && \
+RUN wget -O lowdown.tar.gz https://kristaps.bsd.lv/lowdown/snapshots/lowdown-1.1.0.tar.gz && \
     tar -xzf lowdown.tar.gz && \
     rm lowdown.tar.gz
 
 # Make the configure script executable and run it
 RUN \
-    cd lowdown-1.0.2 &&\
+    cd lowdown-1.1.0 &&\
     chmod +x configure &&\
     ./configure &&\
     make && \

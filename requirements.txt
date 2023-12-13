@@ -1,2 +1,3 @@
+git+https://github.com/reproduce-work/reproduce-work.git
 toml
 python-dotenv
